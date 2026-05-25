@@ -12,7 +12,7 @@ documentation = "https://docs.rs/tool-arg-defaults"
 readme = "README.md"
 keywords = ["llm", "agents", "tool", "defaults", "kwargs"]
 categories = ["api-bindings"]
-exclude = [".github/*", "target/*"]
+exclude = [".github/*", "target/*", "*.log"]
 
 [dependencies]
 serde_json = "1"
