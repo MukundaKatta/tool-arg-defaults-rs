@@ -52,16 +52,33 @@ impl ToolArgDefaults {
         }
     }
 
-    /// Set defaults for a specific tool. `defaults` must be a JSON object.
-    /// Panics (debug) if `defaults` is not an object; silently no-ops in
-    /// release when the input is not an object.
+    /// Set (replacing any existing) defaults for a specific tool.
+    ///
+    /// `defaults` must be a JSON object; any other [`Value`] is ignored and
+    /// the call becomes a no-op. Use [`merge_defaults`](Self::merge_defaults)
+    /// to add or override individual keys without discarding existing ones.
     pub fn set_defaults(&mut self, tool_name: &str, defaults: Value) {
         if let Value::Object(m) = defaults {
             self.tool_defaults.insert(tool_name.to_owned(), m);
         }
     }
 
+    /// Merge `defaults` into the existing defaults for `tool_name`, creating
+    /// the entry if it does not exist. Keys present in `defaults` override the
+    /// previously stored values for the same key; other keys are kept.
+    ///
+    /// Non-object `defaults` are ignored (no-op).
+    pub fn merge_defaults(&mut self, tool_name: &str, defaults: Value) {
+        if let Value::Object(m) = defaults {
+            let entry = self.tool_defaults.entry(tool_name.to_owned()).or_default();
+            for (k, v) in m {
+                entry.insert(k, v);
+            }
+        }
+    }
+
     /// Set global defaults applied to every tool call (lowest priority).
+    /// Non-object values are ignored (no-op).
     pub fn set_global_defaults(&mut self, defaults: Value) {
         if let Value::Object(m) = defaults {
             self.global_defaults = m;
@@ -100,9 +117,9 @@ impl ToolArgDefaults {
         Value::Object(merge(&self.global_defaults, &caller))
     }
 
-    /// Remove defaults for a tool.
-    pub fn remove_defaults(&mut self, tool_name: &str) {
-        self.tool_defaults.remove(tool_name);
+    /// Remove defaults for a tool. Returns `true` if an entry was removed.
+    pub fn remove_defaults(&mut self, tool_name: &str) -> bool {
+        self.tool_defaults.remove(tool_name).is_some()
     }
 
     /// True if defaults are set for this tool.
@@ -110,9 +127,30 @@ impl ToolArgDefaults {
         self.tool_defaults.contains_key(tool_name)
     }
 
-    /// All tool names that have explicit defaults.
+    /// Borrow the stored defaults for `tool_name`, if any.
+    pub fn get_defaults(&self, tool_name: &str) -> Option<&Map<String, Value>> {
+        self.tool_defaults.get(tool_name)
+    }
+
+    /// Borrow the global defaults map.
+    pub fn global_defaults(&self) -> &Map<String, Value> {
+        &self.global_defaults
+    }
+
+    /// All tool names that have explicit defaults. Order is unspecified.
     pub fn tool_names(&self) -> Vec<&str> {
         self.tool_defaults.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// True if no tool-specific and no global defaults are registered.
+    pub fn is_empty(&self) -> bool {
+        self.tool_defaults.is_empty() && self.global_defaults.is_empty()
+    }
+
+    /// Remove all tool-specific and global defaults.
+    pub fn clear(&mut self) {
+        self.tool_defaults.clear();
+        self.global_defaults.clear();
     }
 }
 
@@ -199,9 +237,71 @@ mod tests {
     fn remove_defaults_works() {
         let mut d = ToolArgDefaults::new();
         d.set_defaults("t", json!({"x": 1}));
-        d.remove_defaults("t");
+        assert!(d.remove_defaults("t"));
         let out = d.apply("t", &json!({}));
         assert!(out.get("x").is_none());
+    }
+
+    #[test]
+    fn remove_defaults_returns_false_when_absent() {
+        let mut d = ToolArgDefaults::new();
+        assert!(!d.remove_defaults("nope"));
+    }
+
+    #[test]
+    fn merge_defaults_creates_and_extends() {
+        let mut d = ToolArgDefaults::new();
+        d.set_defaults("t", json!({"a": 1, "b": 2}));
+        // Override "b", add "c", keep "a".
+        d.merge_defaults("t", json!({"b": 20, "c": 3}));
+        let out = d.apply("t", &json!({}));
+        assert_eq!(out["a"], 1);
+        assert_eq!(out["b"], 20);
+        assert_eq!(out["c"], 3);
+    }
+
+    #[test]
+    fn merge_defaults_on_unknown_tool_registers_it() {
+        let mut d = ToolArgDefaults::new();
+        d.merge_defaults("fresh", json!({"k": "v"}));
+        assert!(d.has_defaults("fresh"));
+        assert_eq!(d.apply("fresh", &json!({}))["k"], "v");
+    }
+
+    #[test]
+    fn non_object_defaults_are_ignored() {
+        let mut d = ToolArgDefaults::new();
+        d.set_defaults("t", json!([1, 2, 3]));
+        assert!(!d.has_defaults("t"));
+        d.set_global_defaults(json!("not an object"));
+        assert!(d.global_defaults().is_empty());
+    }
+
+    #[test]
+    fn get_defaults_borrows_stored_map() {
+        let mut d = ToolArgDefaults::new();
+        d.set_defaults("t", json!({"x": 1}));
+        assert_eq!(d.get_defaults("t").unwrap()["x"], 1);
+        assert!(d.get_defaults("missing").is_none());
+    }
+
+    #[test]
+    fn is_empty_reflects_state() {
+        let mut d = ToolArgDefaults::new();
+        assert!(d.is_empty());
+        d.set_defaults("t", json!({"x": 1}));
+        assert!(!d.is_empty());
+    }
+
+    #[test]
+    fn clear_removes_everything() {
+        let mut d = ToolArgDefaults::new();
+        d.set_defaults("t", json!({"x": 1}));
+        d.set_global_defaults(json!({"g": 1}));
+        d.clear();
+        assert!(d.is_empty());
+        assert!(!d.has_defaults("t"));
+        assert!(d.global_defaults().is_empty());
     }
 
     #[test]
